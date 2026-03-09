@@ -63,6 +63,25 @@
             </div>
             <div class="stack" id="glyphs-list"></div>
           </article>
+
+          <article class="panel reveal">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Knowledge Graph</p>
+                <h2>Entity Web</h2>
+              </div>
+              <p class="panel-note">Named concepts and the threads between them.</p>
+            </div>
+            <form id="kg-neighbors-form" class="ritual-form compact">
+              <label>
+                <span>Explore entity</span>
+                <input id="kg-name-input" name="name" type="text" placeholder="collapse, reintegration, ...">
+              </label>
+              <button type="submit">Trace neighbors</button>
+            </form>
+            <div class="stack" id="kg-neighbors-result"></div>
+            <div class="stack" id="kg-entities-list"></div>
+          </article>
         </section>
 
         <section class="column side">

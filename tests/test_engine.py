@@ -614,6 +614,33 @@ class ThresholdServerTests(unittest.TestCase):
             html = response.read().decode("utf-8")
         self.assertIn("Threshold Console", html)
 
+    def test_kg_neighbors_endpoint_not_found(self) -> None:
+        payload = self.fetch_json("/api/kg/neighbors?name=nonexistent")
+        self.assertFalse(payload["found"])
+        self.assertEqual(payload["entity"], "nonexistent")
+
+    def test_kg_entity_post_and_neighbors_get(self) -> None:
+        self.fetch_json("/api/kg/entity", method="POST",
+                        payload={"name": "sovereignty", "kind": "concept",
+                                 "description": "The right to hold and release one's own state."})
+        self.fetch_json("/api/kg/link", method="POST",
+                        payload={"from_name": "sovereignty", "relation": "enables", "to_name": "affirmation"})
+        neighbors = self.fetch_json("/api/kg/neighbors?name=sovereignty")
+        self.assertTrue(neighbors["found"])
+        self.assertEqual(len(neighbors["outbound"]), 1)
+        self.assertEqual(neighbors["outbound"][0]["name"], "affirmation")
+        self.assertEqual(neighbors["outbound"][0]["relation"], "enables")
+
+    def test_state_includes_kg_entities(self) -> None:
+        self.fetch_json("/api/kg/entity", method="POST",
+                        payload={"name": "glyph", "kind": "concept",
+                                 "description": "A condensed memory pattern."})
+        state = self.fetch_json("/api/state")
+        self.assertIn("kg_entities", state)
+        self.assertGreaterEqual(len(state["kg_entities"]), 1)
+        names = [e["name"] for e in state["kg_entities"]]
+        self.assertIn("glyph", names)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -123,6 +123,16 @@ class ThresholdRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"query": text, "phase": phase, "domains": domains, "results": results})
             return
 
+        if parsed.path == "/api/kg/neighbors":
+            name = parse_qs(parsed.query).get("name", [""])[0].strip()
+            if not name:
+                self._send_json({"error": "Missing ?name= parameter."}, status=HTTPStatus.BAD_REQUEST)
+                return
+            with self.server.engine() as engine:
+                result = engine.kg_neighbors(name)
+            self._send_json(result)
+            return
+
         self._send_json({"error": "Unknown endpoint."}, status=HTTPStatus.NOT_FOUND)
 
     def _handle_api_post(self, path: str) -> None:
@@ -165,6 +175,19 @@ class ThresholdRequestHandler(BaseHTTPRequestHandler):
                     )
                 elif path == "/api/consolidate":
                     result = engine.consolidate(limit=int(payload.get("limit", 5)))
+                elif path == "/api/kg/entity":
+                    result = engine.kg_add_entity(
+                        name=self._required(payload, "name"),
+                        kind=payload.get("kind", "concept"),
+                        description=payload.get("description", ""),
+                    )
+                elif path == "/api/kg/link":
+                    result = engine.kg_link(
+                        from_name=self._required(payload, "from_name"),
+                        relation=self._required(payload, "relation"),
+                        to_name=self._required(payload, "to_name"),
+                        weight=float(payload.get("weight", 1.0)),
+                    )
                 elif path == "/api/demo":
                     result = demo_action(engine, self._required(payload, "action"))
                 else:
