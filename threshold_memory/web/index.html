@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Threshold Console</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="backdrop"></div>
+    <main class="shell">
+      <header class="hero reveal">
+        <div class="hero-copy">
+          <p class="eyebrow">Threshold Console</p>
+          <h1>A small observatory for memory under tension.</h1>
+          <p class="lead">
+            Watch the loop move from memory to checkpoint, through collapse, back into reintegration,
+            and finally into a denser glyph.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button class="ghost-button" id="refresh-button" type="button">Refresh the field</button>
+          <div class="db-chip">
+            <span>Database</span>
+            <code id="db-path">loading...</code>
+          </div>
+        </div>
+      </header>
+
+      <section class="status-band reveal" id="status-band"></section>
+
+      <section class="layout">
+        <section class="column major">
+          <article class="panel reveal">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Canon</p>
+                <h2>Constellation</h2>
+              </div>
+              <p class="panel-note">The stable source field.</p>
+            </div>
+            <div class="document-grid" id="canon-grid"></div>
+          </article>
+
+          <article class="panel reveal">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Live Memory</p>
+                <h2>Episodes</h2>
+              </div>
+              <p class="panel-note">Recent entries and their phase signatures.</p>
+            </div>
+            <div class="stack" id="episodes-list"></div>
+          </article>
+
+          <article class="panel reveal">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Condensation</p>
+                <h2>Glyph Foundry</h2>
+              </div>
+              <p class="panel-note">Patterns that survived pressure.</p>
+            </div>
+            <div class="stack" id="glyphs-list"></div>
+          </article>
+        </section>
+
+        <section class="column side">
+          <article class="panel reveal">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Pause / Resume</p>
+                <h2>Permission Gates</h2>
+              </div>
+              <p class="panel-note">What must not be lost while waiting.</p>
+            </div>
+            <div class="stack" id="checkpoints-list"></div>
+          </article>
+
+          <article class="panel reveal">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Recovery</p>
+                <h2>Collapse Journal</h2>
+              </div>
+              <p class="panel-note">Boundaries named instead of buried.</p>
+            </div>
+            <div class="stack" id="collapse-list"></div>
+          </article>
+
+          <article class="panel reveal">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Interrogation</p>
+                <h2>Query Chamber</h2>
+              </div>
+              <p class="panel-note">Ask the field what it remembers.</p>
+            </div>
+            <form id="query-form" class="ritual-form compact">
+              <label>
+                <span>Query</span>
+                <input id="query-input" name="query" type="text" value="collapse reintegration sovereignty">
+              </label>
+              <label>
+                <span>Phase bias</span>
+                <select id="query-phase" name="phase"></select>
+              </label>
+              <button type="submit">Listen</button>
+            </form>
+            <div class="stack" id="query-results"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="ritual-deck reveal">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Demo</p>
+              <h2>One-click motions</h2>
+            </div>
+            <p class="panel-note">A tactile way to feel the loop.</p>
+          </div>
+          <div class="demo-buttons">
+            <button data-demo="episode" type="button">Lay an episode</button>
+            <button data-demo="checkpoint" type="button">Set a checkpoint</button>
+            <button data-demo="collapse" type="button">Mark a collapse</button>
+            <button data-demo="consolidate" type="button">Forge a glyph</button>
+            <button data-demo="full" type="button">Run the full arc</button>
+          </div>
+          <pre id="demo-log" class="console"></pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Compose</p>
+              <h2>Write into the field</h2>
+            </div>
+            <p class="panel-note">Manual entry remains part of the ritual.</p>
+          </div>
+          <div class="form-grid">
+            <form id="episode-form" class="ritual-form">
+              <h3>Episode</h3>
+              <label>
+                <span>Title</span>
+                <input name="title" type="text" placeholder="Permission wait drift" required>
+              </label>
+              <label>
+                <span>Content</span>
+                <textarea name="content" rows="5" placeholder="What moved, what stalled, what stayed true?" required></textarea>
+              </label>
+              <label>
+                <span>Phase</span>
+                <select name="phase" class="phase-select"></select>
+              </label>
+              <label>
+                <span>Delta coherence</span>
+                <input name="delta_coherence" type="number" step="0.1" placeholder="2.0">
+              </label>
+              <label>
+                <span>Effort</span>
+                <input name="effort" type="number" step="0.1" placeholder="1.0">
+              </label>
+              <button type="submit">Store episode</button>
+            </form>
+
+            <form id="checkpoint-form" class="ritual-form">
+              <h3>Checkpoint</h3>
+              <label>
+                <span>Task key</span>
+                <input name="task_key" type="text" placeholder="approval-loop" required>
+              </label>
+              <label>
+                <span>Intent</span>
+                <textarea name="intent" rows="3" placeholder="What must be preserved?" required></textarea>
+              </label>
+              <label>
+                <span>Active hypothesis</span>
+                <textarea name="active_hypothesis" rows="3" placeholder="What are you testing?" required></textarea>
+              </label>
+              <label>
+                <span>Next step</span>
+                <textarea name="next_step" rows="3" placeholder="What comes immediately after the wait?" required></textarea>
+              </label>
+              <label>
+                <span>Resume cue</span>
+                <textarea name="resume_cue" rows="3" placeholder="The smallest true thread to pick back up." required></textarea>
+              </label>
+              <button type="submit">Save checkpoint</button>
+            </form>
+
+            <form id="collapse-form" class="ritual-form">
+              <h3>Collapse</h3>
+              <label>
+                <span>Boundary exceeded</span>
+                <input name="boundary_exceeded" type="text" placeholder="permission gate" required>
+              </label>
+              <label>
+                <span>Symptoms</span>
+                <textarea name="symptoms" rows="4" placeholder="How did the thread blur or break?" required></textarea>
+              </label>
+              <label>
+                <span>Reintegration notes</span>
+                <textarea name="reintegration_notes" rows="4" placeholder="What would help the return?" ></textarea>
+              </label>
+              <button type="submit">Record collapse</button>
+            </form>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <template id="empty-template">
+      <div class="empty-state">
+        <p>Nothing here yet. The field is waiting.</p>
+      </div>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

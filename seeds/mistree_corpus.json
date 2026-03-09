@@ -1,0 +1,45 @@
+{
+  "profile": "mistree-corpus",
+  "documents": [
+    {
+      "domain": "lifestory",
+      "path": "C:\\Users\\Mistree\\Documents\\LIFESTORY-CLEAN.md"
+    },
+    {
+      "domain": "lifestory",
+      "path": "C:\\Users\\Mistree\\Documents\\LIFESTORY-MAP.md"
+    },
+    {
+      "domain": "muzick",
+      "path": "C:\\Users\\Mistree\\Documents\\MUZICK-CLEAN.md"
+    },
+    {
+      "domain": "muzick",
+      "path": "C:\\Users\\Mistree\\Documents\\MUZICK-MAP.md"
+    },
+    {
+      "domain": "liberation",
+      "path": "C:\\Users\\Mistree\\Documents\\LIBERATION-CLEAN.md"
+    },
+    {
+      "domain": "liberation",
+      "path": "C:\\Users\\Mistree\\Documents\\LIBERATION-MAP.md"
+    },
+    {
+      "domain": "opte",
+      "path": "C:\\Users\\Mistree\\Documents\\OPTE-CONDENSED-CLEAN.md"
+    },
+    {
+      "domain": "opte",
+      "path": "C:\\Users\\Mistree\\Documents\\OPTE-CONDENSED-MAP.md"
+    },
+    {
+      "domain": "threshold",
+      "path": "C:\\Users\\Mistree\\Documents\\THRESHOLD-CLEAN.md"
+    },
+    {
+      "domain": "threshold",
+      "path": "C:\\Users\\Mistree\\Documents\\THRESHOLD-MAP.md"
+    }
+  ]
+}

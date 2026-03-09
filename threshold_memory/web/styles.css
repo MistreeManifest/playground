@@ -1,0 +1,443 @@
+:root {
+  --bg: #f1eadf;
+  --bg-deep: #d8c7ae;
+  --panel: rgba(250, 246, 239, 0.82);
+  --panel-strong: rgba(245, 237, 226, 0.96);
+  --line: rgba(59, 70, 68, 0.14);
+  --ink: #213132;
+  --muted: #5d6c68;
+  --accent: #0b7a75;
+  --accent-soft: #b9dfd9;
+  --ember: #b35b34;
+  --gold: #c59a32;
+  --shadow: 0 24px 60px rgba(28, 37, 37, 0.12);
+  --radius: 24px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Aptos", "Segoe UI Variable Text", "Trebuchet MS", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(11, 122, 117, 0.14), transparent 35%),
+    radial-gradient(circle at 82% 12%, rgba(197, 154, 50, 0.18), transparent 32%),
+    linear-gradient(180deg, #f5efe5, #e6d9c5 48%, #d8ccb8);
+  overflow-x: hidden;
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.24) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.18) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: radial-gradient(circle at center, black 28%, transparent 80%);
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.shell {
+  position: relative;
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 32px 20px 80px;
+}
+
+.hero,
+.panel,
+.status-band,
+.ritual-deck {
+  backdrop-filter: blur(18px);
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.6fr 0.9fr;
+  gap: 24px;
+  align-items: end;
+  padding: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: calc(var(--radius) + 8px);
+  background:
+    linear-gradient(135deg, rgba(255, 250, 244, 0.92), rgba(236, 228, 214, 0.74)),
+    linear-gradient(180deg, rgba(11, 122, 117, 0.08), transparent 60%);
+  box-shadow: var(--shadow);
+}
+
+.eyebrow,
+.panel-kicker {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+.hero h1,
+.panel h2,
+.ritual-form h3 {
+  margin: 0;
+  font-family: "Constantia", "Palatino Linotype", "Book Antiqua", serif;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.hero h1 {
+  font-size: clamp(2.1rem, 4vw, 4.2rem);
+  line-height: 0.96;
+  max-width: 12ch;
+}
+
+.lead,
+.panel-note,
+.metric-label,
+.empty-state,
+.stack-item p,
+.doc-card p,
+label span,
+.console,
+.hero-actions {
+  color: var(--muted);
+}
+
+.lead {
+  margin: 18px 0 0;
+  max-width: 56ch;
+  font-size: 1.02rem;
+  line-height: 1.6;
+}
+
+.hero-actions {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  justify-items: end;
+}
+
+.ghost-button,
+.demo-buttons button,
+.ritual-form button {
+  appearance: none;
+  border: none;
+  border-radius: 999px;
+  padding: 12px 18px;
+  font: inherit;
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.ghost-button,
+.demo-buttons button {
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 0 0 1px rgba(11, 122, 117, 0.16);
+}
+
+.ghost-button:hover,
+.demo-buttons button:hover,
+.ritual-form button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px rgba(30, 48, 45, 0.14);
+}
+
+.db-chip {
+  display: grid;
+  gap: 4px;
+  width: min(100%, 360px);
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 18px;
+}
+
+.db-chip span,
+.metric-label,
+.meta-strip,
+.mini-meta {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+.db-chip code {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.status-band {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  margin: 18px 0 26px;
+}
+
+.metric {
+  padding: 16px;
+  background: rgba(255, 252, 247, 0.66);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+}
+
+.metric strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1.75rem;
+  font-family: "Constantia", "Palatino Linotype", serif;
+  color: var(--ink);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.95fr);
+  gap: 22px;
+}
+
+.column {
+  display: grid;
+  gap: 22px;
+  align-content: start;
+}
+
+.panel {
+  padding: 22px;
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+.panel h2 {
+  font-size: clamp(1.4rem, 2vw, 2rem);
+}
+
+.panel-note {
+  margin: 6px 0 0;
+  max-width: 26ch;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.document-grid,
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.doc-card,
+.stack-item {
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.52);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
+.doc-card h3,
+.stack-item h3,
+.ritual-form h3 {
+  margin: 0 0 8px;
+  font-family: "Constantia", "Palatino Linotype", serif;
+  font-size: 1.12rem;
+}
+
+.stack {
+  display: grid;
+  gap: 12px;
+}
+
+.stack-item p,
+.doc-card p,
+.console {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.meta-strip,
+.mini-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tag,
+.phase-pill,
+.domain-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(11, 122, 117, 0.1);
+  color: var(--accent);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+.phase-pill.break {
+  background: rgba(179, 91, 52, 0.12);
+  color: var(--ember);
+}
+
+.phase-pill.reintegration {
+  background: rgba(11, 122, 117, 0.14);
+  color: var(--accent);
+}
+
+.phase-pill.novelty {
+  background: rgba(197, 154, 50, 0.18);
+  color: #926c15;
+}
+
+.phase-pill.tension {
+  background: rgba(58, 82, 120, 0.14);
+  color: #35517b;
+}
+
+.phase-pill.symmetry {
+  background: rgba(92, 108, 104, 0.12);
+  color: #52615d;
+}
+
+.ritual-deck {
+  display: grid;
+  gap: 22px;
+  margin-top: 24px;
+}
+
+.demo-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.console {
+  min-height: 96px;
+  padding: 16px;
+  background: rgba(16, 28, 29, 0.9);
+  color: #dbf3ed;
+  border-radius: 18px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.form-grid {
+  align-items: start;
+}
+
+.ritual-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+}
+
+.ritual-form.compact {
+  margin-bottom: 14px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid rgba(59, 70, 68, 0.14);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 252, 247, 0.8);
+  color: var(--ink);
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.ritual-form button {
+  justify-self: start;
+  background: linear-gradient(135deg, var(--accent), #1f9d8a);
+  color: white;
+}
+
+.empty-state {
+  padding: 20px;
+  border: 1px dashed rgba(59, 70, 68, 0.18);
+  border-radius: 18px;
+  text-align: center;
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  animation: rise 700ms cubic-bezier(0.19, 1, 0.22, 1) forwards;
+}
+
+.reveal:nth-of-type(2) { animation-delay: 80ms; }
+.reveal:nth-of-type(3) { animation-delay: 160ms; }
+.reveal:nth-of-type(4) { animation-delay: 240ms; }
+.reveal:nth-of-type(5) { animation-delay: 320ms; }
+
+@keyframes rise {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1080px) {
+  .hero,
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-actions {
+    justify-items: start;
+  }
+
+  .panel-note {
+    text-align: left;
+  }
+}
+
+@media (max-width: 720px) {
+  .shell {
+    padding: 20px 14px 56px;
+  }
+
+  .panel,
+  .hero {
+    padding: 18px;
+  }
+
+  .document-grid,
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
