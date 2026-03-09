@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib import request
 
@@ -135,6 +136,226 @@ class ThresholdMemoryEngineTests(unittest.TestCase):
         self.assertIn("episodes", state)
         self.assertEqual(state["episodes"][0]["title"], "Threshold moment")
         self.assertEqual(state["checkpoints"][0]["task_key"], "threshold-demo")
+
+
+    def test_episode_includes_freshness_and_confidence(self) -> None:
+        result = self.engine.log_episode(
+            title="Freshness test",
+            content="A new memory should arrive fresh and with initial confidence.",
+            phase="symmetry",
+        )
+        self.assertEqual(result["freshness"], 1.0)
+        self.assertEqual(result["confidence"], 0.3)
+
+        episodes = self.engine.list_recent_episodes(limit=1)
+        self.assertIn("freshness", episodes[0])
+        self.assertIn("confidence", episodes[0])
+        self.assertAlmostEqual(episodes[0]["freshness"], 1.0, places=1)
+        self.assertEqual(episodes[0]["confidence"], 0.3)
+
+    def test_affirm_boosts_confidence(self) -> None:
+        ep = self.engine.log_episode(
+            title="Affirmable",
+            content="This memory will be affirmed.",
+            phase="tension",
+            delta_coherence=3.0,
+            effort=1.0,
+        )
+        result = self.engine.affirm("episode", ep["episode_id"])
+        self.assertEqual(result["confidence_before"], 0.3)
+        self.assertAlmostEqual(result["confidence_after"], 0.55, places=2)
+
+        # Affirm again — confidence rises further
+        result2 = self.engine.affirm("episode", ep["episode_id"])
+        self.assertAlmostEqual(result2["confidence_after"], 0.8, places=2)
+
+        # Affirm once more — should cap at 1.0
+        result3 = self.engine.affirm("episode", ep["episode_id"])
+        self.assertLessEqual(result3["confidence_after"], 1.0)
+
+    def test_touch_resets_freshness_not_confidence(self) -> None:
+        ep = self.engine.log_episode(
+            title="Touchable",
+            content="Touch refreshes without affirming.",
+            phase="novelty",
+        )
+        result = self.engine.touch("episode", ep["episode_id"])
+        self.assertAlmostEqual(result["freshness"], 1.0, places=1)
+
+        # Confidence unchanged — touch doesn't affirm
+        episodes = self.engine.list_recent_episodes(limit=1)
+        self.assertEqual(episodes[0]["confidence"], 0.3)
+
+    def test_affirm_works_on_all_kinds(self) -> None:
+        cp = self.engine.save_checkpoint(
+            task_key="affirm-test",
+            intent="Test affirm on checkpoint.",
+            active_hypothesis="Affirm works across types.",
+            next_step="Check result.",
+            resume_cue="Resume here.",
+        )
+        result = self.engine.affirm("checkpoint", cp["checkpoint_id"])
+        self.assertAlmostEqual(result["confidence_after"], 0.55, places=2)
+
+        collapse = self.engine.record_collapse(
+            boundary_exceeded="test boundary",
+            symptoms="test symptoms",
+        )
+        result = self.engine.affirm("collapse", collapse["collapse_id"])
+        self.assertAlmostEqual(result["confidence_after"], 0.55, places=2)
+
+    def test_glyph_inherits_confidence_from_episodes(self) -> None:
+        # Create episodes and affirm one
+        ep1 = self.engine.log_episode(
+            title="Ep1", content="First episode for glyph.", phase="tension",
+            delta_coherence=2.0, effort=1.0,
+        )
+        self.engine.log_episode(
+            title="Ep2", content="Second episode for glyph.", phase="tension",
+            delta_coherence=3.0, effort=1.0,
+        )
+        self.engine.affirm("episode", ep1["episode_id"])  # ep1 confidence → 0.55
+
+        glyph = self.engine.consolidate(limit=2)
+        self.assertIsNotNone(glyph)
+        # Glyph confidence should be at least 0.5 (floor) and reflect inherited average
+        glyphs = self.engine.list_glyphs(limit=1)
+        self.assertGreaterEqual(glyphs[0]["confidence"], 0.5)
+
+    def test_sweep_fades_old_unaffirmed_episodes(self) -> None:
+        # Create an episode and manually backdate it so it looks old
+        ep = self.engine.log_episode(
+            title="Ancient memory",
+            content="This episode is very old and has never been affirmed.",
+            phase="symmetry",
+        )
+        # Backdate: set touched_at and created_at to 60 days ago
+        old_time = (datetime.now(UTC) - timedelta(days=60)).replace(microsecond=0).isoformat()
+        self.engine.conn.execute(
+            "UPDATE episodes SET touched_at = ?, created_at = ? WHERE id = ?",
+            (old_time, old_time, ep["episode_id"]),
+        )
+        self.engine.conn.commit()
+
+        result = self.engine.sweep()
+        self.assertEqual(result["newly_faded"], 1)
+        self.assertIn(ep["episode_id"], result["faded_ids"])
+        self.assertEqual(result["totals"]["faded"], 1)
+
+    def test_sweep_does_not_fade_fresh_episodes(self) -> None:
+        self.engine.log_episode(
+            title="Fresh memory",
+            content="This just happened.",
+            phase="novelty",
+        )
+        result = self.engine.sweep()
+        self.assertEqual(result["newly_faded"], 0)
+        self.assertEqual(result["totals"]["live"], 1)
+
+    def test_sweep_anchors_high_confidence_episodes(self) -> None:
+        ep = self.engine.log_episode(
+            title="Trusted memory",
+            content="This has been affirmed repeatedly.",
+            phase="reintegration",
+        )
+        # Affirm 3 times: 0.3 → 0.55 → 0.8 → 1.0
+        self.engine.affirm("episode", ep["episode_id"])
+        self.engine.affirm("episode", ep["episode_id"])
+        self.engine.affirm("episode", ep["episode_id"])
+
+        result = self.engine.sweep()
+        self.assertEqual(result["totals"]["anchored"], 1)
+        self.assertEqual(result["totals"]["faded"], 0)
+
+    def test_affirm_auto_anchors_at_threshold(self) -> None:
+        ep = self.engine.log_episode(
+            title="Soon anchored",
+            content="Will be anchored by the third affirm.",
+            phase="tension",
+        )
+        self.engine.affirm("episode", ep["episode_id"])  # → 0.55
+        result = self.engine.affirm("episode", ep["episode_id"])  # → 0.80
+        self.assertTrue(result.get("anchored", False))
+        self.assertEqual(result["lifecycle"], "anchored")
+
+        # Verify it persists
+        episodes = self.engine.list_recent_episodes(limit=1)
+        self.assertEqual(episodes[0]["lifecycle"], "anchored")
+
+    def test_episode_lifecycle_in_output(self) -> None:
+        ep = self.engine.log_episode(
+            title="Lifecycle test",
+            content="Should start as live.",
+            phase="symmetry",
+        )
+        self.assertEqual(ep["lifecycle"], "live")
+
+        episodes = self.engine.list_recent_episodes(limit=1)
+        self.assertEqual(episodes[0]["lifecycle"], "live")
+
+    def test_promote_requires_confidence(self) -> None:
+        # Create a glyph via consolidation
+        self.engine.log_episode(title="A", content="first memory", phase="tension", delta_coherence=2.0, effort=1.0)
+        self.engine.log_episode(title="B", content="second memory", phase="tension", delta_coherence=3.0, effort=1.0)
+        glyph = self.engine.consolidate(limit=2)
+        self.assertIsNotNone(glyph)
+
+        # Try to promote without enough confidence — should be refused
+        result = self.engine.promote(glyph["glyph_id"])
+        self.assertFalse(result["promoted"])
+        self.assertIn("below anchor threshold", result["reason"])
+
+    def test_promote_succeeds_after_affirmation(self) -> None:
+        self.engine.log_episode(title="A", content="first memory for promotion", phase="novelty", delta_coherence=4.0, effort=1.0)
+        self.engine.log_episode(title="B", content="second memory for promotion", phase="novelty", delta_coherence=3.0, effort=1.0)
+        glyph = self.engine.consolidate(limit=2)
+        self.assertIsNotNone(glyph)
+
+        # Affirm the glyph until it crosses the threshold
+        self.engine.affirm("glyph", glyph["glyph_id"])  # 0.5 → 0.75
+        self.engine.affirm("glyph", glyph["glyph_id"])  # 0.75 → 1.0
+
+        result = self.engine.promote(glyph["glyph_id"], domain="tested")
+        self.assertTrue(result["promoted"])
+        self.assertEqual(result["domain"], "tested")
+
+        # Verify it's now in canon_documents
+        status = self.engine.status()
+        self.assertEqual(status["canon_documents"], 1)
+
+    def test_promote_is_idempotent(self) -> None:
+        self.engine.log_episode(title="C", content="idempotent test", phase="reintegration", delta_coherence=2.0, effort=1.0)
+        glyph = self.engine.consolidate(limit=1)
+        self.engine.affirm("glyph", glyph["glyph_id"])
+        self.engine.affirm("glyph", glyph["glyph_id"])
+
+        first = self.engine.promote(glyph["glyph_id"])
+        second = self.engine.promote(glyph["glyph_id"])
+        self.assertTrue(first["promoted"])
+        self.assertTrue(second["promoted"])
+        # Should still be just 1 document (ON CONFLICT updates)
+        self.assertEqual(self.engine.status()["canon_documents"], 1)
+
+    def test_query_vitals_in_metadata(self) -> None:
+        self.engine.log_episode(
+            title="Vitals query test",
+            content="Resume permission reintegration drift approval.",
+            phase="break",
+            delta_coherence=2.0,
+            effort=1.0,
+        )
+        self.engine.save_checkpoint(
+            task_key="vitals-test",
+            intent="Test vitals in query results.",
+            active_hypothesis="Vitals appear in metadata.",
+            next_step="Check metadata.",
+            resume_cue="Resume from permission boundary.",
+        )
+        results = self.engine.query("resume permission", phase="break", limit=5)
+        for item in results:
+            if item["kind"] in ("checkpoint", "glyph", "collapse"):
+                self.assertIn("freshness", item["metadata"])
+                self.assertIn("confidence", item["metadata"])
 
 
 class ThresholdServerTests(unittest.TestCase):

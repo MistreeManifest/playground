@@ -10,6 +10,29 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# Freshness decay: how quickly memories fade without interaction.
+# Half-life in days — after this many days, freshness drops to 0.5.
+FRESHNESS_HALF_LIFE_DAYS = 7.0
+# Glyphs are condensed — dense things hold heat longer.
+GLYPH_HALF_LIFE_DAYS = 21.0
+
+# Confidence: initial value for new memories. Rises with affirmation.
+CONFIDENCE_INITIAL = 0.3
+CONFIDENCE_AFFIRM_BOOST = 0.25
+CONFIDENCE_MAX = 1.0
+
+# Anchoring: once confidence reaches this threshold, the memory stops decaying.
+CONFIDENCE_ANCHOR_THRESHOLD = 0.8
+
+# Fading: when freshness drops below this AND confidence is below anchor threshold,
+# the episode is marked "faded" — still retrievable, but quiet in results.
+FRESHNESS_FADE_THRESHOLD = 0.15
+
+# Episode lifecycle states
+EPISODE_LIVE = "live"
+EPISODE_FADED = "faded"
+EPISODE_ANCHORED = "anchored"
+
 
 STOPWORDS = {
     "a",
@@ -153,6 +176,25 @@ def compute_joy(delta_coherence: float | None, effort: float | None) -> float | 
     return round(delta_coherence / effort, 4)
 
 
+def compute_freshness(created_or_touched: str, half_life_days: float = FRESHNESS_HALF_LIFE_DAYS) -> float:
+    """Exponential decay from 1.0 toward 0.0 based on age.
+
+    A memory created right now has freshness 1.0.
+    After half_life_days, it drops to 0.5. After two half-lives, 0.25.
+    Think of it like a tone fading — the note is still there, but quieter.
+    """
+    try:
+        ts = datetime.fromisoformat(created_or_touched)
+    except (ValueError, TypeError):
+        return 0.5  # unknown age → neutral
+    now = datetime.now(UTC)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    age_days = max((now - ts).total_seconds() / 86400.0, 0.0)
+    decay = math.exp(-0.693 * age_days / half_life_days)  # ln(2) ≈ 0.693
+    return round(clamp(decay, 0.0, 1.0), 4)
+
+
 def dumps_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True)
 
@@ -224,6 +266,9 @@ class ThresholdMemoryEngine:
                 effort REAL,
                 joy REAL,
                 density REAL NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.3,
+                lifecycle TEXT NOT NULL DEFAULT 'live',
+                touched_at TEXT,
                 created_at TEXT NOT NULL,
                 consolidated_at TEXT
             );
@@ -238,6 +283,8 @@ class ThresholdMemoryEngine:
                 risk_flags_json TEXT NOT NULL,
                 state_snapshot_json TEXT NOT NULL,
                 status TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.3,
+                touched_at TEXT,
                 created_at TEXT NOT NULL,
                 resolved_at TEXT
             );
@@ -250,6 +297,8 @@ class ThresholdMemoryEngine:
                 symptoms TEXT NOT NULL,
                 recovery_protocol TEXT NOT NULL,
                 reintegration_notes TEXT,
+                confidence REAL NOT NULL DEFAULT 0.3,
+                touched_at TEXT,
                 created_at TEXT NOT NULL,
                 recovered_at TEXT
             );
@@ -263,11 +312,30 @@ class ThresholdMemoryEngine:
                 keywords_json TEXT NOT NULL,
                 joy REAL,
                 density REAL NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.5,
+                touched_at TEXT,
                 created_at TEXT NOT NULL
             );
             """
         )
+        # Migrate existing databases: add new columns if missing.
+        self._migrate_add_column("episodes", "confidence", "REAL NOT NULL DEFAULT 0.3")
+        self._migrate_add_column("episodes", "lifecycle", "TEXT NOT NULL DEFAULT 'live'")
+        self._migrate_add_column("episodes", "touched_at", "TEXT")
+        self._migrate_add_column("checkpoints", "confidence", "REAL NOT NULL DEFAULT 0.3")
+        self._migrate_add_column("checkpoints", "touched_at", "TEXT")
+        self._migrate_add_column("collapse_events", "confidence", "REAL NOT NULL DEFAULT 0.3")
+        self._migrate_add_column("collapse_events", "touched_at", "TEXT")
+        self._migrate_add_column("glyphs", "confidence", "REAL NOT NULL DEFAULT 0.5")
+        self._migrate_add_column("glyphs", "touched_at", "TEXT")
         self.conn.commit()
+
+    def _migrate_add_column(self, table: str, column: str, col_type: str) -> None:
+        """Add a column if it doesn't already exist. Safe to call repeatedly."""
+        cursor = self.conn.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cursor.fetchall()}
+        if column not in existing:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
     def status(self) -> dict[str, int]:
         tables = ("canon_documents", "canon_terms", "episodes", "checkpoints", "collapse_events", "glyphs")
@@ -300,7 +368,7 @@ class ThresholdMemoryEngine:
         rows = self.conn.execute(
             """
             SELECT id, title, content, phase, source, tags_json, delta_coherence, effort, joy,
-                   density, created_at, consolidated_at
+                   density, confidence, lifecycle, touched_at, created_at, consolidated_at
             FROM episodes
             ORDER BY created_at DESC, id DESC
             LIMIT ?
@@ -325,7 +393,8 @@ class ThresholdMemoryEngine:
     def list_glyphs(self, limit: int = 8) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT id, title, content, source_episode_ids_json, phase, keywords_json, joy, density, created_at
+            SELECT id, title, content, source_episode_ids_json, phase, keywords_json,
+                   joy, density, confidence, touched_at, created_at
             FROM glyphs
             ORDER BY created_at DESC, id DESC
             LIMIT ?
@@ -338,7 +407,7 @@ class ThresholdMemoryEngine:
         rows = self.conn.execute(
             """
             SELECT id, checkpoint_id, episode_id, boundary_exceeded, symptoms, recovery_protocol,
-                   reintegration_notes, created_at, recovered_at
+                   reintegration_notes, confidence, touched_at, created_at, recovered_at
             FROM collapse_events
             ORDER BY created_at DESC, id DESC
             LIMIT ?
@@ -425,9 +494,10 @@ class ThresholdMemoryEngine:
         cursor = self.conn.execute(
             """
             INSERT INTO episodes(
-                title, content, phase, source, tags_json, delta_coherence, effort, joy, density, created_at
+                title, content, phase, source, tags_json, delta_coherence, effort, joy, density,
+                confidence, lifecycle, touched_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 title,
@@ -439,6 +509,9 @@ class ThresholdMemoryEngine:
                 effort,
                 joy,
                 density,
+                CONFIDENCE_INITIAL,
+                EPISODE_LIVE,
+                created_at,
                 created_at,
             ),
         )
@@ -448,6 +521,9 @@ class ThresholdMemoryEngine:
             "phase": normalized_phase,
             "joy": joy,
             "density": density,
+            "confidence": CONFIDENCE_INITIAL,
+            "lifecycle": EPISODE_LIVE,
+            "freshness": 1.0,
             "created_at": created_at,
         }
 
@@ -468,9 +544,9 @@ class ThresholdMemoryEngine:
             """
             INSERT INTO checkpoints(
                 task_key, intent, active_hypothesis, next_step, resume_cue,
-                risk_flags_json, state_snapshot_json, status, created_at
+                risk_flags_json, state_snapshot_json, status, confidence, touched_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
             """,
             (
                 task_key,
@@ -480,6 +556,8 @@ class ThresholdMemoryEngine:
                 resume_cue,
                 dumps_json(risk_flags),
                 dumps_json(state_snapshot),
+                CONFIDENCE_INITIAL,
+                created_at,
                 created_at,
             ),
         )
@@ -489,6 +567,8 @@ class ThresholdMemoryEngine:
             "task_key": task_key,
             "created_at": created_at,
             "status": "pending",
+            "confidence": CONFIDENCE_INITIAL,
+            "freshness": 1.0,
         }
 
     def next_resume(self, task_key: str | None = None) -> dict[str, Any] | None:
@@ -538,9 +618,10 @@ class ThresholdMemoryEngine:
         cursor = self.conn.execute(
             """
             INSERT INTO collapse_events(
-                checkpoint_id, episode_id, boundary_exceeded, symptoms, recovery_protocol, reintegration_notes, created_at
+                checkpoint_id, episode_id, boundary_exceeded, symptoms, recovery_protocol,
+                reintegration_notes, confidence, touched_at, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 checkpoint_id,
@@ -549,13 +630,206 @@ class ThresholdMemoryEngine:
                 symptoms,
                 protocol,
                 reintegration_notes,
+                CONFIDENCE_INITIAL,
+                created_at,
                 created_at,
             ),
         )
         if checkpoint_id is not None:
             self.resolve_checkpoint(checkpoint_id, status="collapsed")
         self.conn.commit()
-        return {"collapse_id": cursor.lastrowid, "created_at": created_at, "recovery_protocol": protocol}
+        return {
+            "collapse_id": cursor.lastrowid,
+            "created_at": created_at,
+            "recovery_protocol": protocol,
+            "confidence": CONFIDENCE_INITIAL,
+            "freshness": 1.0,
+        }
+
+    def affirm(self, kind: str, item_id: int) -> dict[str, Any]:
+        """Affirm a memory — boost its confidence and refresh it.
+
+        This is the sovereignty piece: the system suggests, but you decide what stays.
+        Affirming a memory says 'this is still true, this still matters.'
+        """
+        table, id_col = self._resolve_table(kind)
+        row = self.conn.execute(f"SELECT * FROM {table} WHERE {id_col} = ?", (item_id,)).fetchone()
+        if not row:
+            raise ValueError(f"No {kind} with id {item_id}")
+
+        old_confidence = row["confidence"] if "confidence" in row.keys() else CONFIDENCE_INITIAL
+        new_confidence = round(min(old_confidence + CONFIDENCE_AFFIRM_BOOST, CONFIDENCE_MAX), 4)
+        now = utcnow()
+        self.conn.execute(
+            f"UPDATE {table} SET confidence = ?, touched_at = ? WHERE {id_col} = ?",
+            (new_confidence, now, item_id),
+        )
+
+        # If this is an episode and confidence crosses the anchor threshold,
+        # mark it as anchored — it stops decaying.
+        anchored = False
+        if kind == "episode" and new_confidence >= CONFIDENCE_ANCHOR_THRESHOLD:
+            old_lifecycle = row["lifecycle"] if "lifecycle" in row.keys() else EPISODE_LIVE
+            if old_lifecycle != EPISODE_ANCHORED:
+                self.conn.execute(
+                    f"UPDATE {table} SET lifecycle = ? WHERE {id_col} = ?",
+                    (EPISODE_ANCHORED, item_id),
+                )
+                anchored = True
+
+        self.conn.commit()
+        result = {
+            "kind": kind,
+            "id": item_id,
+            "confidence_before": old_confidence,
+            "confidence_after": new_confidence,
+            "freshness": compute_freshness(now),
+            "touched_at": now,
+        }
+        if anchored:
+            result["lifecycle"] = EPISODE_ANCHORED
+            result["anchored"] = True
+        return result
+
+    def touch(self, kind: str, item_id: int) -> dict[str, Any]:
+        """Touch a memory — reset its freshness clock without changing confidence.
+
+        Like picking up a book you've already read. It doesn't become more true,
+        but it moves back to the front of the shelf.
+        """
+        table, id_col = self._resolve_table(kind)
+        row = self.conn.execute(f"SELECT * FROM {table} WHERE {id_col} = ?", (item_id,)).fetchone()
+        if not row:
+            raise ValueError(f"No {kind} with id {item_id}")
+
+        now = utcnow()
+        self.conn.execute(
+            f"UPDATE {table} SET touched_at = ? WHERE {id_col} = ?",
+            (now, item_id),
+        )
+        self.conn.commit()
+        return {
+            "kind": kind,
+            "id": item_id,
+            "freshness": compute_freshness(now),
+            "touched_at": now,
+        }
+
+    def promote(self, glyph_id: int, domain: str = "emergent") -> dict[str, Any]:
+        """Promote a glyph into a canon document.
+
+        This is the affirmation gate — a glyph has been tested by time and
+        affirmed by the user, and now it becomes part of the stable foundation.
+        Not every glyph earns this. Only the ones that are still true after
+        the moment has passed.
+
+        Requires confidence >= anchor threshold. This can't be forced — it
+        must be earned through repeated affirmation.
+        """
+        row = self.conn.execute("SELECT * FROM glyphs WHERE id = ?", (glyph_id,)).fetchone()
+        if not row:
+            raise ValueError(f"No glyph with id {glyph_id}")
+
+        confidence = row["confidence"] if "confidence" in row.keys() else 0.5
+        if confidence < CONFIDENCE_ANCHOR_THRESHOLD:
+            return {
+                "promoted": False,
+                "reason": f"Confidence {confidence} is below anchor threshold {CONFIDENCE_ANCHOR_THRESHOLD}. Affirm it more first.",
+                "glyph_id": glyph_id,
+                "confidence": confidence,
+            }
+
+        # Create as canon document
+        path = f"glyph://{glyph_id}"
+        created_at = utcnow()
+        self.conn.execute(
+            """
+            INSERT INTO canon_documents(domain, title, path, body, summary, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                domain = excluded.domain,
+                title = excluded.title,
+                body = excluded.body,
+                summary = excluded.summary,
+                created_at = excluded.created_at
+            """,
+            (domain, row["title"], path, row["content"], row["content"][:420], created_at),
+        )
+        doc_row = self.conn.execute("SELECT id FROM canon_documents WHERE path = ?", (path,)).fetchone()
+        self.conn.commit()
+        return {
+            "promoted": True,
+            "glyph_id": glyph_id,
+            "document_id": doc_row["id"],
+            "domain": domain,
+            "title": row["title"],
+            "confidence": confidence,
+        }
+
+    def sweep(self) -> dict[str, Any]:
+        """Walk through all live episodes and update their lifecycle.
+
+        - Anchored episodes are left alone (they've been affirmed enough to endure).
+        - Live episodes whose freshness has dropped below the fade threshold
+          AND whose confidence is below the anchor threshold become 'faded'.
+        - Faded episodes that get touched or affirmed later can return to 'live'.
+
+        This is not deletion. Fading is a quieting — the memory moves to the
+        back of the shelf but stays on it. Think of it as the difference
+        between forgetting and letting go of the foreground.
+        """
+        rows = self.conn.execute(
+            "SELECT id, confidence, lifecycle, touched_at, created_at FROM episodes WHERE lifecycle = ?",
+            (EPISODE_LIVE,),
+        ).fetchall()
+
+        faded_ids: list[int] = []
+        for row in rows:
+            anchor = row["touched_at"] or row["created_at"]
+            freshness = compute_freshness(anchor)
+            confidence = row["confidence"] or CONFIDENCE_INITIAL
+
+            if confidence >= CONFIDENCE_ANCHOR_THRESHOLD:
+                # Promote to anchored — this episode has proven itself
+                self.conn.execute(
+                    "UPDATE episodes SET lifecycle = ? WHERE id = ?",
+                    (EPISODE_ANCHORED, row["id"]),
+                )
+            elif freshness < FRESHNESS_FADE_THRESHOLD:
+                # Fade — this episode hasn't been touched and hasn't been affirmed
+                self.conn.execute(
+                    "UPDATE episodes SET lifecycle = ? WHERE id = ?",
+                    (EPISODE_FADED, row["id"]),
+                )
+                faded_ids.append(row["id"])
+
+        self.conn.commit()
+
+        # Count current states for the report
+        counts = {}
+        for state in (EPISODE_LIVE, EPISODE_FADED, EPISODE_ANCHORED):
+            counts[state] = self.conn.execute(
+                "SELECT COUNT(*) AS c FROM episodes WHERE lifecycle = ?", (state,)
+            ).fetchone()["c"]
+
+        return {
+            "swept": len(rows),
+            "newly_faded": len(faded_ids),
+            "faded_ids": faded_ids,
+            "totals": counts,
+        }
+
+    def _resolve_table(self, kind: str) -> tuple[str, str]:
+        """Map a memory kind to its table name and id column."""
+        mapping = {
+            "episode": ("episodes", "id"),
+            "checkpoint": ("checkpoints", "id"),
+            "collapse": ("collapse_events", "id"),
+            "glyph": ("glyphs", "id"),
+        }
+        if kind not in mapping:
+            raise ValueError(f"Unknown kind: {kind}. Use one of: {', '.join(mapping)}")
+        return mapping[kind]
 
     def default_reintegration_protocol(self, boundary_exceeded: str, symptoms: str) -> str:
         steps = [
@@ -591,10 +865,16 @@ class ThresholdMemoryEngine:
         content = compact_text(" ".join(sentences))[:480]
         title = "Glyph: " + " / ".join(keywords[:3]) if keywords else "Glyph: pending pattern"
 
+        # Glyphs inherit the average confidence of their source episodes,
+        # with a floor of 0.5 — condensation itself is an act of affirmation.
+        conf_values = [row["confidence"] for row in rows if row["confidence"] is not None]
+        glyph_confidence = max(sum(conf_values) / len(conf_values), 0.5) if conf_values else 0.5
+        now = utcnow()
         cursor = self.conn.execute(
             """
-            INSERT INTO glyphs(title, content, source_episode_ids_json, phase, keywords_json, joy, density, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO glyphs(title, content, source_episode_ids_json, phase, keywords_json,
+                               joy, density, confidence, touched_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 title,
@@ -604,7 +884,9 @@ class ThresholdMemoryEngine:
                 dumps_json(keywords),
                 joy,
                 density,
-                utcnow(),
+                round(glyph_confidence, 4),
+                now,
+                now,
             ),
         )
         episode_ids = [row["id"] for row in rows]
@@ -713,14 +995,42 @@ class ThresholdMemoryEngine:
             )
         return results
 
+    def _vitals_multiplier(self, row: sqlite3.Row) -> float:
+        """Blend freshness and confidence into a score multiplier.
+
+        A brand-new, unaffirmed memory gets: freshness 1.0, confidence 0.3 → ~0.65x
+        A week-old, affirmed memory gets:     freshness 0.5, confidence 0.8 → ~0.65x
+        A fresh, affirmed memory gets:        freshness 1.0, confidence 1.0 → 1.0x
+        A stale, unaffirmed memory gets:      freshness 0.1, confidence 0.3 → ~0.2x
+        An anchored memory:                   confidence dominates, freshness matters less
+
+        Floor of 0.15 so nothing disappears entirely — it just gets quieter.
+        """
+        vitals = self._vitals(row)
+
+        # Anchored memories lean on confidence, not freshness — they've earned persistence.
+        lifecycle = row["lifecycle"] if "lifecycle" in row.keys() else EPISODE_LIVE
+        if lifecycle == EPISODE_ANCHORED:
+            blend = (vitals["freshness"] * 0.2) + (vitals["confidence"] * 0.8)
+        elif lifecycle == EPISODE_FADED:
+            # Faded memories are very quiet — but not silent
+            blend = (vitals["freshness"] * 0.5) + (vitals["confidence"] * 0.5)
+            return max(blend * 0.3, 0.05)
+        else:
+            blend = (vitals["freshness"] * 0.5) + (vitals["confidence"] * 0.5)
+
+        return max(blend, 0.15)
+
     def _query_glyphs(self, query_tokens: set[str], phase: str | None) -> list[MemoryResult]:
         rows = self.conn.execute("SELECT * FROM glyphs ORDER BY created_at DESC").fetchall()
         results: list[MemoryResult] = []
         for row in rows:
             score = self._token_score(query_tokens, f"{row['title']} {row['content']} {row['keywords_json']}")
             score *= self._phase_multiplier(row["phase"], phase)
+            score *= self._vitals_multiplier(row)
             if score <= 0:
                 continue
+            vitals = self._vitals(row)
             results.append(
                 MemoryResult(
                     kind="glyph",
@@ -728,7 +1038,11 @@ class ThresholdMemoryEngine:
                     title=row["title"],
                     body=row["content"],
                     phase=row["phase"],
-                    metadata={"keywords": loads_json(row["keywords_json"], [])},
+                    metadata={
+                        "keywords": loads_json(row["keywords_json"], []),
+                        "freshness": vitals["freshness"],
+                        "confidence": vitals["confidence"],
+                    },
                 )
             )
         return results
@@ -752,8 +1066,10 @@ class ThresholdMemoryEngine:
                 score += 1.2
             if "resume" in query_tokens or "permission" in query_tokens:
                 score += 0.8
+            score *= self._vitals_multiplier(row)
             if score <= 0:
                 continue
+            vitals = self._vitals(row)
             results.append(
                 MemoryResult(
                     kind="checkpoint",
@@ -765,6 +1081,8 @@ class ThresholdMemoryEngine:
                         "checkpoint_id": row["id"],
                         "next_step": row["next_step"],
                         "risk_flags": loads_json(row["risk_flags_json"], []),
+                        "freshness": vitals["freshness"],
+                        "confidence": vitals["confidence"],
                     },
                 )
             )
@@ -778,8 +1096,10 @@ class ThresholdMemoryEngine:
             score = self._token_score(query_tokens, haystack)
             if phase in {"break", "reintegration"}:
                 score += 0.6
+            score *= self._vitals_multiplier(row)
             if score <= 0:
                 continue
+            vitals = self._vitals(row)
             results.append(
                 MemoryResult(
                     kind="collapse",
@@ -787,7 +1107,11 @@ class ThresholdMemoryEngine:
                     title=f"Collapse at {row['boundary_exceeded']}",
                     body=row["recovery_protocol"],
                     phase="reintegration",
-                    metadata={"collapse_id": row["id"]},
+                    metadata={
+                        "collapse_id": row["id"],
+                        "freshness": vitals["freshness"],
+                        "confidence": vitals["confidence"],
+                    },
                 )
             )
         return results
@@ -848,7 +1172,18 @@ class ThresholdMemoryEngine:
             raise ValueError(f"Unsupported phase: {phase}")
         return normalized
 
+    def _vitals(self, row: sqlite3.Row) -> dict[str, float]:
+        """Compute the live freshness and return it alongside stored confidence."""
+        touched = row["touched_at"] if "touched_at" in row.keys() else None
+        anchor = touched or row["created_at"]
+        confidence = row["confidence"] if "confidence" in row.keys() else CONFIDENCE_INITIAL
+        return {
+            "freshness": compute_freshness(anchor),
+            "confidence": confidence or CONFIDENCE_INITIAL,
+        }
+
     def _checkpoint_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        vitals = self._vitals(row)
         return {
             "checkpoint_id": row["id"],
             "task_key": row["task_key"],
@@ -859,11 +1194,15 @@ class ThresholdMemoryEngine:
             "risk_flags": loads_json(row["risk_flags_json"], []),
             "state_snapshot": loads_json(row["state_snapshot_json"], {}),
             "status": row["status"],
+            "freshness": vitals["freshness"],
+            "confidence": vitals["confidence"],
             "created_at": row["created_at"],
             "resolved_at": row["resolved_at"],
         }
 
     def _episode_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        vitals = self._vitals(row)
+        lifecycle = row["lifecycle"] if "lifecycle" in row.keys() else EPISODE_LIVE
         return {
             "episode_id": row["id"],
             "title": row["title"],
@@ -875,11 +1214,15 @@ class ThresholdMemoryEngine:
             "effort": row["effort"],
             "joy": row["joy"],
             "density": row["density"],
+            "freshness": vitals["freshness"],
+            "confidence": vitals["confidence"],
+            "lifecycle": lifecycle,
             "created_at": row["created_at"],
             "consolidated_at": row["consolidated_at"],
         }
 
     def _glyph_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        vitals = self._vitals(row)
         return {
             "glyph_id": row["id"],
             "title": row["title"],
@@ -889,10 +1232,13 @@ class ThresholdMemoryEngine:
             "keywords": loads_json(row["keywords_json"], []),
             "joy": row["joy"],
             "density": row["density"],
+            "freshness": vitals["freshness"],
+            "confidence": vitals["confidence"],
             "created_at": row["created_at"],
         }
 
     def _collapse_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        vitals = self._vitals(row)
         return {
             "collapse_id": row["id"],
             "checkpoint_id": row["checkpoint_id"],
@@ -901,6 +1247,8 @@ class ThresholdMemoryEngine:
             "symptoms": row["symptoms"],
             "recovery_protocol": row["recovery_protocol"],
             "reintegration_notes": row["reintegration_notes"],
+            "freshness": vitals["freshness"],
+            "confidence": vitals["confidence"],
             "created_at": row["created_at"],
             "recovered_at": row["recovered_at"],
         }

@@ -76,6 +76,24 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("--domain", action="append")
     query_parser.add_argument("--limit", type=int, default=6)
 
+    affirm_parser = subparsers.add_parser("affirm", help="Affirm a memory — boost confidence and refresh.")
+    add_db_argument(affirm_parser)
+    affirm_parser.add_argument("kind", choices=["episode", "checkpoint", "collapse", "glyph"])
+    affirm_parser.add_argument("item_id", type=int)
+
+    touch_parser = subparsers.add_parser("touch", help="Touch a memory — reset freshness without changing confidence.")
+    add_db_argument(touch_parser)
+    touch_parser.add_argument("kind", choices=["episode", "checkpoint", "collapse", "glyph"])
+    touch_parser.add_argument("item_id", type=int)
+
+    promote_parser = subparsers.add_parser("promote", help="Promote a high-confidence glyph into a canon document.")
+    add_db_argument(promote_parser)
+    promote_parser.add_argument("glyph_id", type=int)
+    promote_parser.add_argument("--domain", default="emergent", help="Domain for the new canon document.")
+
+    sweep_parser = subparsers.add_parser("sweep", help="Fade old, unaffirmed episodes. Anchor high-confidence ones.")
+    add_db_argument(sweep_parser)
+
     status_parser = subparsers.add_parser("status", help="Show table counts.")
     add_db_argument(status_parser)
 
@@ -140,6 +158,14 @@ def run_command(engine: ThresholdMemoryEngine, args: argparse.Namespace) -> obje
         return engine.consolidate(limit=args.limit)
     if args.command == "query":
         return engine.query(args.text, phase=args.phase, domains=args.domain, limit=args.limit)
+    if args.command == "affirm":
+        return engine.affirm(args.kind, args.item_id)
+    if args.command == "touch":
+        return engine.touch(args.kind, args.item_id)
+    if args.command == "promote":
+        return engine.promote(args.glyph_id, domain=args.domain)
+    if args.command == "sweep":
+        return engine.sweep()
     if args.command == "status":
         return engine.status()
     raise ValueError(f"Unsupported command: {args.command}")
