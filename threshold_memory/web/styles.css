@@ -411,6 +411,41 @@ textarea {
   }
 }
 
+.kg-entity {
+  cursor: pointer;
+  transition: box-shadow 140ms ease, transform 140ms ease;
+}
+
+.kg-entity:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(28, 37, 37, 0.1);
+}
+
+.kg-relations {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.kg-relation-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+}
+
+.kg-relation-verb {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.muted-weight {
+  margin-left: auto;
+  font-size: 0.74rem;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  color: var(--muted);
+}
+
 @media (max-width: 1080px) {
   .hero,
   .layout {

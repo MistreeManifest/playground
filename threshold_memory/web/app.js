@@ -10,6 +10,8 @@ const checkpointsList = document.querySelector("#checkpoints-list");
 const collapseList = document.querySelector("#collapse-list");
 const glyphsList = document.querySelector("#glyphs-list");
 const queryResults = document.querySelector("#query-results");
+const kgEntitiesList = document.querySelector("#kg-entities-list");
+const kgNeighborsResult = document.querySelector("#kg-neighbors-result");
 const demoLog = document.querySelector("#demo-log");
 const dbPath = document.querySelector("#db-path");
 const emptyTemplate = document.querySelector("#empty-template");
@@ -22,6 +24,8 @@ const refreshButton = document.querySelector("#refresh-button");
 const episodeForm = document.querySelector("#episode-form");
 const checkpointForm = document.querySelector("#checkpoint-form");
 const collapseForm = document.querySelector("#collapse-form");
+const kgNeighborsForm = document.querySelector("#kg-neighbors-form");
+const kgNameInput = document.querySelector("#kg-name-input");
 const demoButtons = document.querySelectorAll("[data-demo]");
 const phaseSelects = document.querySelectorAll(".phase-select");
 
@@ -76,6 +80,8 @@ function renderStatus(status) {
     ["checkpoints", "Checkpoints"],
     ["collapse_events", "Collapses"],
     ["glyphs", "Glyphs"],
+    ["kg_entities", "Entities"],
+    ["kg_relations", "Relations"],
   ];
   statusBand.innerHTML = labels
     .map(
@@ -211,6 +217,70 @@ function renderGlyphs(glyphs) {
     .join("");
 }
 
+function renderKg(entities) {
+  if (!entities || !entities.length) {
+    renderEmpty(kgEntitiesList);
+    return;
+  }
+  kgEntitiesList.innerHTML = entities
+    .map(
+      (entity) => `
+        <article class="stack-item kg-entity" data-name="${escapeHtml(entity.name)}">
+          <div class="meta-strip">
+            <span class="domain-pill">${escapeHtml(entity.kind)}</span>
+            <span class="tag">${escapeHtml(entity.relation_count)} links</span>
+          </div>
+          <h3>${escapeHtml(entity.name)}</h3>
+          ${entity.description ? `<p>${escapeHtml(entity.description)}</p>` : ""}
+        </article>
+      `
+    )
+    .join("");
+
+  // Click an entity card to pre-fill the neighbor search
+  kgEntitiesList.querySelectorAll(".kg-entity").forEach((card) => {
+    card.addEventListener("click", () => {
+      kgNameInput.value = card.dataset.name;
+      kgNeighborsForm.dispatchEvent(new Event("submit", { cancelable: true }));
+    });
+  });
+}
+
+function renderKgNeighbors(data) {
+  if (!data.found) {
+    kgNeighborsResult.innerHTML = `<div class="empty-state"><p>Entity "${escapeHtml(data.entity)}" not found in the graph.</p></div>`;
+    return;
+  }
+  const outbound = data.outbound || [];
+  const inbound = data.inbound || [];
+  if (!outbound.length && !inbound.length) {
+    kgNeighborsResult.innerHTML = `<div class="empty-state"><p>"${escapeHtml(data.entity)}" has no relations yet.</p></div>`;
+    return;
+  }
+  const rows = (items, dir) =>
+    items.map((n) => `
+      <div class="kg-relation-row">
+        <span class="tag">${escapeHtml(dir)}</span>
+        <span class="kg-relation-verb">${escapeHtml(n.relation)}</span>
+        <strong>${escapeHtml(n.name)}</strong>
+        <span class="muted-weight">${escapeHtml(String(n.weight))}</span>
+      </div>
+    `).join("");
+  kgNeighborsResult.innerHTML = `
+    <article class="stack-item">
+      <div class="meta-strip">
+        <span class="domain-pill">${escapeHtml(data.kind || "entity")}</span>
+        <strong>${escapeHtml(data.entity)}</strong>
+      </div>
+      ${data.description ? `<p>${escapeHtml(data.description)}</p>` : ""}
+      <div class="kg-relations">
+        ${rows(outbound, "→")}
+        ${rows(inbound, "←")}
+      </div>
+    </article>
+  `;
+}
+
 function renderQuery(results) {
   if (!results.length) {
     renderEmpty(queryResults);
@@ -268,6 +338,7 @@ async function loadState() {
   renderCheckpoints(payload.checkpoints);
   renderCollapses(payload.collapse_events);
   renderGlyphs(payload.glyphs);
+  renderKg(payload.kg_entities || []);
 }
 
 async function runQuery(event) {
@@ -332,6 +403,14 @@ collapseForm.addEventListener("submit", (event) =>
     ...payload,
   }))
 );
+
+kgNeighborsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = kgNameInput.value.trim();
+  if (!name) return;
+  const data = await fetchJson(`/api/kg/neighbors?name=${encodeURIComponent(name)}`);
+  renderKgNeighbors(data);
+});
 
 demoButtons.forEach((button) => {
   button.addEventListener("click", async () => {
