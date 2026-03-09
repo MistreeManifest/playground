@@ -11,6 +11,10 @@ def add_db_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default="data/threshold-memory.sqlite3", help="Path to the SQLite database.")
 
 
+def add_mirror_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mirror", default=None, help="Optional JSONL file to mirror all write events.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Threshold memory prototype.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -29,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     episode_parser = subparsers.add_parser("episode", help="Store an episodic memory entry.")
     add_db_argument(episode_parser)
+    add_mirror_argument(episode_parser)
     episode_parser.add_argument("--title", required=True)
     episode_parser.add_argument("--content", required=True)
     episode_parser.add_argument("--phase", default="symmetry", choices=PHASE_CHOICES)
@@ -39,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     checkpoint_parser = subparsers.add_parser("checkpoint", help="Persist a permission checkpoint.")
     add_db_argument(checkpoint_parser)
+    add_mirror_argument(checkpoint_parser)
     checkpoint_parser.add_argument("--task-key", required=True)
     checkpoint_parser.add_argument("--intent", required=True)
     checkpoint_parser.add_argument("--hypothesis", required=True)
@@ -58,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     collapse_parser = subparsers.add_parser("collapse", help="Record a collapse or failed run.")
     add_db_argument(collapse_parser)
+    add_mirror_argument(collapse_parser)
     collapse_parser.add_argument("--boundary", required=True)
     collapse_parser.add_argument("--symptoms", required=True)
     collapse_parser.add_argument("--checkpoint-id", type=int)
@@ -97,13 +104,41 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="Show table counts.")
     add_db_argument(status_parser)
 
+    kg_entity_parser = subparsers.add_parser("kg-entity", help="Add or update a knowledge graph entity.")
+    add_db_argument(kg_entity_parser)
+    add_mirror_argument(kg_entity_parser)
+    kg_entity_parser.add_argument("--name", required=True, help="Entity name.")
+    kg_entity_parser.add_argument("--kind", default="concept", help="Entity kind (concept, term, phase, tool, ...).")
+    kg_entity_parser.add_argument("--description", default="", help="Brief description.")
+
+    kg_link_parser = subparsers.add_parser("kg-link", help="Create a typed relation between two entities.")
+    add_db_argument(kg_link_parser)
+    add_mirror_argument(kg_link_parser)
+    kg_link_parser.add_argument("--from", dest="from_name", required=True, help="Source entity name.")
+    kg_link_parser.add_argument("--relation", required=True, help="Relation type (e.g. causes, enables, opposes).")
+    kg_link_parser.add_argument("--to", dest="to_name", required=True, help="Target entity name.")
+    kg_link_parser.add_argument("--weight", type=float, default=1.0, help="Edge weight (default 1.0).")
+
+    kg_neighbors_parser = subparsers.add_parser("kg-neighbors", help="Show relations for an entity.")
+    add_db_argument(kg_neighbors_parser)
+    kg_neighbors_parser.add_argument("name", help="Entity name.")
+    kg_neighbors_parser.add_argument("--limit", type=int, default=10)
+
+    kg_extract_parser = subparsers.add_parser(
+        "kg-extract", help="Auto-extract entities from an episode using the canon term index."
+    )
+    add_db_argument(kg_extract_parser)
+    add_mirror_argument(kg_extract_parser)
+    kg_extract_parser.add_argument("--episode-id", type=int, required=True, help="Episode id to extract from.")
+
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    engine = ThresholdMemoryEngine(Path(args.db))
+    mirror = getattr(args, "mirror", None)
+    engine = ThresholdMemoryEngine(Path(args.db), mirror_path=mirror)
     try:
         engine.initialize()
         result = run_command(engine, args)
@@ -168,6 +203,14 @@ def run_command(engine: ThresholdMemoryEngine, args: argparse.Namespace) -> obje
         return engine.sweep()
     if args.command == "status":
         return engine.status()
+    if args.command == "kg-entity":
+        return engine.kg_add_entity(name=args.name, kind=args.kind, description=args.description)
+    if args.command == "kg-link":
+        return engine.kg_link(from_name=args.from_name, relation=args.relation, to_name=args.to_name, weight=args.weight)
+    if args.command == "kg-neighbors":
+        return engine.kg_neighbors(args.name, limit=args.limit)
+    if args.command == "kg-extract":
+        return engine.kg_extract_from_episode(args.episode_id)
     raise ValueError(f"Unsupported command: {args.command}")
 
 

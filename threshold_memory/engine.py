@@ -205,6 +205,30 @@ def loads_json(value: str | None, default: Any) -> Any:
     return json.loads(value)
 
 
+# ── Sanitization ──────────────────────────────────────────────────────────────
+# Borrowed from OpenFang's session_repair approach: strip prompt-injection
+# markers and oversized base64-like blobs from untrusted content at the
+# system boundary — before anything is written to the store.
+
+_INJECTION_RE = re.compile(
+    r"(<\|im_start\|>|<\|im_end\|>|IGNORE\s+PREVIOUS\s+INSTRUCTIONS?|SYSTEM\s+PROMPT\s+OVERRIDE)",
+    re.IGNORECASE,
+)
+_BASE64_BLOB_RE = re.compile(r"[A-Za-z0-9+/]{1000,}={0,2}")
+_MAX_CONTENT_LENGTH = 10_000
+
+
+def sanitize_content(text: str) -> str:
+    """Strip prompt injection markers and oversized base64-like blobs.
+
+    Applied to all user-supplied text before it enters the store.
+    Truncation is a last-resort ceiling, not a routine operation.
+    """
+    text = _BASE64_BLOB_RE.sub("[redacted-blob]", text)
+    text = _INJECTION_RE.sub("[redacted]", text)
+    return text[:_MAX_CONTENT_LENGTH]
+
+
 @dataclass(slots=True)
 class MemoryResult:
     kind: str
@@ -217,11 +241,12 @@ class MemoryResult:
 
 
 class ThresholdMemoryEngine:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, mirror_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
+        self.mirror_path: Path | None = Path(mirror_path) if mirror_path else None
 
     def __enter__(self) -> "ThresholdMemoryEngine":
         return self
@@ -316,6 +341,31 @@ class ThresholdMemoryEngine:
                 touched_at TEXT,
                 created_at TEXT NOT NULL
             );
+
+            -- Knowledge graph: entities and their relations.
+            -- Adapted from OpenFang's openfang-memory knowledge graph layer.
+            -- Entities are named concepts discovered from canon terms or added manually.
+            -- Relations connect them with typed, weighted edges.
+
+            CREATE TABLE IF NOT EXISTS kg_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL DEFAULT 'concept',
+                description TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0.3,
+                touched_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS kg_relations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_entity_id INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+                to_entity_id INTEGER NOT NULL REFERENCES kg_entities(id) ON DELETE CASCADE,
+                relation TEXT NOT NULL,
+                weight REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL,
+                UNIQUE(from_entity_id, to_entity_id, relation)
+            );
             """
         )
         # Migrate existing databases: add new columns if missing.
@@ -338,7 +388,8 @@ class ThresholdMemoryEngine:
             self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
     def status(self) -> dict[str, int]:
-        tables = ("canon_documents", "canon_terms", "episodes", "checkpoints", "collapse_events", "glyphs")
+        tables = ("canon_documents", "canon_terms", "episodes", "checkpoints", "collapse_events", "glyphs",
+                  "kg_entities", "kg_relations")
         counts = {
             table: self.conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
             for table in tables
@@ -424,9 +475,25 @@ class ThresholdMemoryEngine:
             "checkpoints": self.list_pending_checkpoints(),
             "glyphs": self.list_glyphs(),
             "collapse_events": self.list_collapse_events(),
+            "kg_entities": self.list_kg_entities(),
             "phases": list(PHASE_CHOICES),
             "domains": sorted({row["domain"] for row in self.conn.execute("SELECT DISTINCT domain FROM canon_documents")}),
         }
+
+    def list_kg_entities(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT e.id, e.name, e.kind, e.description, e.confidence, e.created_at,
+                   COUNT(r.id) AS relation_count
+            FROM kg_entities e
+            LEFT JOIN kg_relations r ON r.from_entity_id = e.id
+            GROUP BY e.id
+            ORDER BY relation_count DESC, e.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def seed_document(self, path: str | Path, domain: str | None = None) -> dict[str, Any]:
         source_path = Path(path)
@@ -486,6 +553,8 @@ class ThresholdMemoryEngine:
         delta_coherence: float | None = None,
         effort: float | None = None,
     ) -> dict[str, Any]:
+        title = sanitize_content(title)
+        content = sanitize_content(content)
         normalized_phase = self._normalize_phase(phase)
         tags = tags or []
         joy = compute_joy(delta_coherence, effort)
@@ -516,7 +585,7 @@ class ThresholdMemoryEngine:
             ),
         )
         self.conn.commit()
-        return {
+        result = {
             "episode_id": cursor.lastrowid,
             "phase": normalized_phase,
             "joy": joy,
@@ -526,6 +595,8 @@ class ThresholdMemoryEngine:
             "freshness": 1.0,
             "created_at": created_at,
         }
+        self._mirror("episode", {"title": title, **result})
+        return result
 
     def save_checkpoint(
         self,
@@ -537,6 +608,10 @@ class ThresholdMemoryEngine:
         risk_flags: list[str] | None = None,
         state_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        intent = sanitize_content(intent)
+        active_hypothesis = sanitize_content(active_hypothesis)
+        next_step = sanitize_content(next_step)
+        resume_cue = sanitize_content(resume_cue)
         created_at = utcnow()
         risk_flags = risk_flags or []
         state_snapshot = state_snapshot or {}
@@ -562,7 +637,7 @@ class ThresholdMemoryEngine:
             ),
         )
         self.conn.commit()
-        return {
+        result = {
             "checkpoint_id": cursor.lastrowid,
             "task_key": task_key,
             "created_at": created_at,
@@ -570,6 +645,8 @@ class ThresholdMemoryEngine:
             "confidence": CONFIDENCE_INITIAL,
             "freshness": 1.0,
         }
+        self._mirror("checkpoint", result)
+        return result
 
     def next_resume(self, task_key: str | None = None) -> dict[str, Any] | None:
         if task_key:
@@ -638,13 +715,15 @@ class ThresholdMemoryEngine:
         if checkpoint_id is not None:
             self.resolve_checkpoint(checkpoint_id, status="collapsed")
         self.conn.commit()
-        return {
+        result = {
             "collapse_id": cursor.lastrowid,
             "created_at": created_at,
             "recovery_protocol": protocol,
             "confidence": CONFIDENCE_INITIAL,
             "freshness": 1.0,
         }
+        self._mirror("collapse", {"boundary": boundary_exceeded, **result})
+        return result
 
     def affirm(self, kind: str, item_id: int) -> dict[str, Any]:
         """Affirm a memory — boost its confidence and refresh it.
@@ -896,7 +975,7 @@ class ThresholdMemoryEngine:
             [utcnow(), *episode_ids],
         )
         self.conn.commit()
-        return {
+        result = {
             "glyph_id": cursor.lastrowid,
             "episode_count": len(rows),
             "title": title,
@@ -905,6 +984,8 @@ class ThresholdMemoryEngine:
             "joy": joy,
             "density": density,
         }
+        self._mirror("glyph", result)
+        return result
 
     def query(
         self,
@@ -923,6 +1004,7 @@ class ThresholdMemoryEngine:
         results.extend(self._query_glyphs(query_tokens, normalized_phase))
         results.extend(self._query_checkpoints(query_tokens, normalized_phase))
         results.extend(self._query_collapses(query_tokens, normalized_phase))
+        results.extend(self._query_kg(query_tokens))
 
         ranked = sorted(results, key=lambda item: (-item.score, item.kind, item.title.lower()))
         return [
@@ -1116,6 +1198,33 @@ class ThresholdMemoryEngine:
             )
         return results
 
+    def _query_kg(self, query_tokens: set[str]) -> list[MemoryResult]:
+        rows = self.conn.execute("SELECT * FROM kg_entities").fetchall()
+        results: list[MemoryResult] = []
+        for row in rows:
+            score = self._token_score(query_tokens, f"{row['name']} {row['description']}")
+            if score <= 0:
+                continue
+            # Build a brief body from outbound relations
+            neighbors = self.kg_neighbors(row["name"], limit=4)
+            neighbor_text = ", ".join(
+                f"{n['relation']} {n['name']}" for n in neighbors.get("outbound", [])[:3]
+            )
+            body = row["description"] or neighbor_text or row["name"]
+            results.append(
+                MemoryResult(
+                    kind="entity",
+                    score=score,
+                    title=row["name"],
+                    body=body[:240],
+                    metadata={
+                        "kind": row["kind"],
+                        "outbound_count": len(neighbors.get("outbound", [])),
+                    },
+                )
+            )
+        return results
+
     def _token_score(self, query_tokens: set[str], text: str) -> float:
         if not query_tokens:
             return 0.0
@@ -1252,3 +1361,166 @@ class ThresholdMemoryEngine:
             "created_at": row["created_at"],
             "recovered_at": row["recovered_at"],
         }
+
+    # ── JSONL mirror ───────────────────────────────────────────────────────────
+    # Adapted from OpenFang's session JSONL backup: a human-readable append-only
+    # audit trail that mirrors every write to a newline-delimited JSON file.
+    # The DB is the truth; the mirror is for inspection, grep, and debugging.
+
+    def _mirror(self, event_type: str, data: dict[str, Any]) -> None:
+        """Append one JSON line to the mirror file, if one is configured."""
+        if self.mirror_path is None:
+            return
+        self.mirror_path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({"event": event_type, "ts": utcnow(), **data}, ensure_ascii=True, sort_keys=True)
+        with self.mirror_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+    # ── Knowledge graph ────────────────────────────────────────────────────────
+    # Adapted from OpenFang's openfang-memory knowledge graph layer.
+    # Entities are named concepts; relations are typed, weighted edges between them.
+    # Auto-extraction from episodes uses the existing canon term index as a
+    # controlled vocabulary — no NLP library needed, everything stays inspectable.
+
+    def kg_add_entity(
+        self,
+        name: str,
+        kind: str = "concept",
+        description: str = "",
+    ) -> dict[str, Any]:
+        """Upsert a named entity. Existing descriptions are preserved if the new one is empty."""
+        now = utcnow()
+        self.conn.execute(
+            """
+            INSERT INTO kg_entities(name, kind, description, confidence, touched_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                kind = excluded.kind,
+                description = CASE WHEN excluded.description != '' THEN excluded.description
+                                   ELSE kg_entities.description END,
+                touched_at = excluded.touched_at
+            """,
+            (name, kind, description, CONFIDENCE_INITIAL, now, now),
+        )
+        row = self.conn.execute("SELECT id FROM kg_entities WHERE name = ?", (name,)).fetchone()
+        self.conn.commit()
+        result = {"entity_id": row["id"], "name": name, "kind": kind}
+        self._mirror("kg_entity", result)
+        return result
+
+    def kg_link(
+        self,
+        from_name: str,
+        relation: str,
+        to_name: str,
+        weight: float = 1.0,
+    ) -> dict[str, Any]:
+        """Create a directed, typed edge between two entities (creating them if needed)."""
+        self.kg_add_entity(from_name)
+        self.kg_add_entity(to_name)
+        from_row = self.conn.execute("SELECT id FROM kg_entities WHERE name = ?", (from_name,)).fetchone()
+        to_row = self.conn.execute("SELECT id FROM kg_entities WHERE name = ?", (to_name,)).fetchone()
+        now = utcnow()
+        self.conn.execute(
+            """
+            INSERT INTO kg_relations(from_entity_id, to_entity_id, relation, weight, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(from_entity_id, to_entity_id, relation) DO UPDATE SET weight = excluded.weight
+            """,
+            (from_row["id"], to_row["id"], relation, weight, now),
+        )
+        self.conn.commit()
+        result = {"from": from_name, "relation": relation, "to": to_name, "weight": weight}
+        self._mirror("kg_relation", result)
+        return result
+
+    def kg_neighbors(self, entity_name: str, limit: int = 10) -> dict[str, Any]:
+        """Return outbound and inbound relations for a named entity."""
+        entity = self.conn.execute("SELECT * FROM kg_entities WHERE name = ?", (entity_name,)).fetchone()
+        if not entity:
+            return {"entity": entity_name, "found": False, "outbound": [], "inbound": []}
+        outbound = self.conn.execute(
+            """
+            SELECT e.name, r.relation, r.weight
+            FROM kg_relations r
+            JOIN kg_entities e ON e.id = r.to_entity_id
+            WHERE r.from_entity_id = ?
+            ORDER BY r.weight DESC
+            LIMIT ?
+            """,
+            (entity["id"], limit),
+        ).fetchall()
+        inbound = self.conn.execute(
+            """
+            SELECT e.name, r.relation, r.weight
+            FROM kg_relations r
+            JOIN kg_entities e ON e.id = r.from_entity_id
+            WHERE r.to_entity_id = ?
+            ORDER BY r.weight DESC
+            LIMIT ?
+            """,
+            (entity["id"], limit),
+        ).fetchall()
+        return {
+            "entity": entity_name,
+            "kind": entity["kind"],
+            "description": entity["description"],
+            "found": True,
+            "outbound": [{"name": r["name"], "relation": r["relation"], "weight": r["weight"]} for r in outbound],
+            "inbound": [{"name": r["name"], "relation": r["relation"], "weight": r["weight"]} for r in inbound],
+        }
+
+    def kg_extract_from_episode(self, episode_id: int) -> dict[str, Any]:
+        """Auto-extract entities from an episode using the canon term index.
+
+        Any canon term found in the episode text becomes an entity.
+        Terms in the same domain get a 'co-occurs' edge between them.
+        Every matched term also gets an 'appears-in-phase' edge to the episode's phase.
+
+        This uses the existing controlled vocabulary — no ML model required.
+        The result is always legible and re-runnable.
+        """
+        row = self.conn.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,)).fetchone()
+        if not row:
+            raise ValueError(f"No episode with id {episode_id}")
+        content_tokens = set(tokenize(f"{row['title']} {row['content']}"))
+
+        # Find canon terms present in episode content
+        terms = self.conn.execute(
+            """
+            SELECT canon_terms.term, canon_terms.definition, canon_documents.domain
+            FROM canon_terms
+            JOIN canon_documents ON canon_documents.id = canon_terms.document_id
+            """
+        ).fetchall()
+        matched: list[dict[str, str]] = []
+        for term_row in terms:
+            term_tokens = set(tokenize(term_row["term"]))
+            if term_tokens and term_tokens.issubset(content_tokens):
+                self.kg_add_entity(name=term_row["term"], kind="term", description=term_row["definition"])
+                matched.append({"name": term_row["term"], "domain": term_row["domain"]})
+
+        # Link co-occurring terms within the same domain
+        by_domain: dict[str, list[str]] = {}
+        for m in matched:
+            by_domain.setdefault(m["domain"], []).append(m["name"])
+        links_created = 0
+        for domain_names in by_domain.values():
+            for i, a in enumerate(domain_names):
+                for b in domain_names[i + 1 :]:
+                    self.kg_link(a, "co-occurs", b, weight=0.5)
+                    links_created += 1
+
+        # Tag each entity with the episode's phase
+        phase = row["phase"]
+        for m in matched:
+            self.kg_link(m["name"], "appears-in-phase", phase, weight=1.0)
+
+        result = {
+            "episode_id": episode_id,
+            "entities_found": len(matched),
+            "entities": [m["name"] for m in matched],
+            "links_created": links_created,
+        }
+        self._mirror("kg_extract", result)
+        return result
