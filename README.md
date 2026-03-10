@@ -68,6 +68,27 @@ The console gives you:
 
 ## Quick start
 
+## Working with two GitHub repos
+
+If you want this local repo connected to a second GitHub project as well, add it as another remote:
+
+```bash
+git remote add ark https://github.com/mistreemanifest/ark.git
+git remote -v
+```
+
+Push your current branch to that second remote with:
+
+```bash
+git push -u ark <your-branch-name>
+```
+
+If you already have a remote named `ark`, update it instead:
+
+```bash
+git remote set-url ark https://github.com/mistreemanifest/ark.git
+```
+
 Initialize the database:
 
 ```powershell
